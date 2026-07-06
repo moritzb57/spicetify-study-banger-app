@@ -1,153 +1,172 @@
-import styles from './css/app.module.scss'
-import React from 'react'
-import ReadyToStudyPage from './ReadyToStudyPage';
-import StudyTimePage from './StudyTimePage';
+import React, { useState } from "react";
+import ReadyToStudyPage from "./ReadyToStudyPage";
+import StudyTimePage from "./StudyTimePage";
 
-class App extends React.Component<{}, { count: number; isStudyTime: boolean; lateNightTheme: boolean }> {
-  state = {
-    count: 0,
-    isStudyTime: false,
-    lateNightTheme: false,
+type ThemeSection = Record<string, string>;
+type ThemeConfig = Record<string, ThemeSection>;
+
+const hexToRGB = (hex: string): number[] => {
+  let normalizedHex = hex.trim().replace(/^#/, "");
+
+  if (normalizedHex.length === 3) {
+    normalizedHex = normalizedHex
+      .split("")
+      .map((char) => char + char)
+      .join("");
+  }
+
+  if (normalizedHex.length !== 6) {
+    throw new Error("Only 3- or 6-digit hex colours are allowed.");
+  }
+
+  if (/[^0-9a-f]/i.test(normalizedHex)) {
+    throw new Error("Only hex colours are allowed.");
+  }
+
+  const rgbHex = normalizedHex.match(/.{1,2}/g);
+
+  if (!rgbHex || rgbHex.length !== 3) {
+    throw new Error("Could not parse hex colour.");
+  }
+
+  return rgbHex.map((channel) => parseInt(channel, 16));
+};
+
+const parseColorIni = (colorIni: string): ThemeConfig => {
+  const regex = {
+    section: /^\s*\[\s*([^\]]*)\s*\]\s*$/,
+    param: /^\s*([^=]+?)\s*=\s*(.*?)\s*$/,
+    comment: /^\s*;.*$/,
   };
 
-  toggleStudyTime = () => {
-    this.setState((state) => ({
-      count: state.count + 1,
-      isStudyTime: !state.isStudyTime,
-    }));
-  };
+  const value: ThemeConfig = {};
+  let section: string | null = null;
 
-  hexToRGB = (hex: string) => {
-    if (hex.length === 3) {
-      hex = hex.split("").map((char) => char + char).join("");
-    } else if (hex.length != 6) {
-      throw "Only 3- or 6-digit hex colours are allowed.";
-    } else if (hex.match(/[^0-9a-f]/i)) {
-      throw "Only hex colours are allowed.";
+  colorIni.split(/[\r\n]+/).forEach((line) => {
+    if (regex.comment.test(line)) {
+      return;
     }
 
-    const aRgbHex = hex.match(/.{1,2}/g);
-    if (!aRgbHex || aRgbHex.length !== 3) {
-      throw "Could not parse hex colour.";
+    const sectionMatch = line.match(regex.section);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      value[section] = {};
+      return;
     }
 
-    const aRgb = [
-      parseInt(aRgbHex[0], 16),
-      parseInt(aRgbHex[1], 16),
-      parseInt(aRgbHex[2], 16),
-    ];
-
-    return aRgb;
-  };
-
-  toggleLateNightTheme = async () => {
-    const existingColorScheme = document.querySelector("#StarryNightColors");
-    const existingUserCSS = document.querySelector("#StarryNightCSS");
-    const existingScript = document.querySelector("#StarryNightScript");
-
-    if (existingColorScheme || existingUserCSS || existingScript) {
-      location.reload();
-    }
-    else {
-      const existingMarketplaceCSS = document.querySelectorAll(".marketplaceCSS");
-      existingMarketplaceCSS.forEach(element => {
-        element.remove();
-      });
-
-      const userCSS = document.querySelectorAll(".userCSS");
-      userCSS.forEach(element => {
-        element.remove();
-      });
-
-      let color = await fetch(`https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/color.ini?time=${Date.now()}`).then(res => res.text());
-
-      const regex = {
-        section: /^\s*\[\s*([^\]]*)\s*\]\s*$/,
-        param: /^\s*([^=]+?)\s*=\s*(.*?)\s*$/,
-        comment: /^\s*;.*$/,
-      };
-      const value = {};
-      const lines = color.split(/[\r\n]+/);
-      let section: string | null = null;
-      lines.forEach(function (line) {
-        if (regex.comment.test(line)) {
-          return;
-        } else if (regex.param.test(line)) {
-          // Discard color scheme if it contains xrdb
-          if (line.includes("xrdb")) {
-            delete value[section ?? ""];
-            section = null;
-            return;
-          }
-
-          const match: string[] | null = line.match(regex.param);
-          if (section && match) {
-            value[section][match[1]] = match[2].split(";")[0].trim();
-          }
-        } else if (regex.section.test(line)) {
-          const match = line.match(regex.section);
-          if (match) {
-            value[match[1]] = {};
-            section = match[1];
-          }
-        } else if (line.length == 0 && section) {
-          section = null;
+    const paramMatch = line.match(regex.param);
+    if (paramMatch) {
+      if (line.includes("xrdb")) {
+        if (section) {
+          delete value[section];
         }
-      });
-      const colorStyle = document.createElement("style");
-      let injectStr = ":root {";
-      const baseScheme = value["base"];
-      const themeIniKeys = Object.keys(baseScheme);
-      themeIniKeys.forEach((key) => {
-        injectStr += `--spice-${key}: #${baseScheme[key]};`;
-        injectStr += `--spice-rgb-${key}: ${this.hexToRGB(baseScheme[key])};`;
-      });
-      injectStr += "}";
-      colorStyle.innerHTML = injectStr;
-      colorStyle.id = "StarryNightColors";
-      document.body.appendChild(colorStyle);
 
-      const css = await fetch(`https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/user.css?time=${Date.now()}`).then(res => res.text());
-      const userCssTag = document.createElement("style");
-      userCssTag.id = "StarryNightCSS";
-      userCssTag.innerHTML = css;
-      document.body.appendChild(userCssTag);
+        section = null;
+        return;
+      }
 
-      const externalJS = await fetch(`https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/theme.js?time=${Date.now()}`).then(res => res.text());
-      const script = document.createElement("script");
-      script.textContent = externalJS;
-      script.async = true;
-      script.id = "StarryNightScript";
-      document.head.appendChild(script);
+      if (!section) {
+        return;
+      }
+
+      if (!value[section]) {
+        value[section] = {};
+      }
+
+      value[section][paramMatch[1].trim()] = paramMatch[2].split(";")[0].trim();
+      return;
     }
 
+    if (line.length === 0 && section) {
+      section = null;
+    }
+  });
+
+  return value;
+};
+
+const toggleLateNightTheme = async (): Promise<void> => {
+  const existingColorScheme = document.querySelector("#StarryNightColors");
+  const existingUserCSS = document.querySelector("#StarryNightCSS");
+  const existingScript = document.querySelector("#StarryNightScript");
+
+  if (existingColorScheme || existingUserCSS || existingScript) {
+    location.reload();
+    return;
+  }
+
+  document.querySelectorAll(".marketplaceCSS").forEach((element) => element.remove());
+  document.querySelectorAll(".userCSS").forEach((element) => element.remove());
+
+  try {
+    const color = await fetch(
+      `https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/color.ini?time=${Date.now()}`,
+    ).then((response) => response.text());
+
+    const value = parseColorIni(color);
+    const baseScheme = value.base;
+
+    if (!baseScheme) {
+      Spicetify.showNotification("StarryNight color scheme could not be loaded.");
+      return;
+    }
+
+    const colorStyle = document.createElement("style");
+    let injectStr = ":root {";
+
+    Object.keys(baseScheme).forEach((key) => {
+      injectStr += `--spice-${key}: #${baseScheme[key]};`;
+      injectStr += `--spice-rgb-${key}: ${hexToRGB(baseScheme[key]).join(",")};`;
+    });
+
+    injectStr += "}";
+    colorStyle.innerHTML = injectStr;
+    colorStyle.id = "StarryNightColors";
+    document.body.appendChild(colorStyle);
+
+    const css = await fetch(
+      `https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/user.css?time=${Date.now()}`,
+    ).then((response) => response.text());
+
+    const userCssTag = document.createElement("style");
+    userCssTag.id = "StarryNightCSS";
+    userCssTag.innerHTML = css;
+    document.body.appendChild(userCssTag);
+
+    const externalJS = await fetch(
+      `https://raw.githubusercontent.com/spicetify/spicetify-themes/master/StarryNight/theme.js?time=${Date.now()}`,
+    ).then((response) => response.text());
+
+    const script = document.createElement("script");
+    script.textContent = externalJS;
+    script.async = true;
+    script.id = "StarryNightScript";
+    document.head.appendChild(script);
+  } catch (error) {
+    console.error("Could not load StarryNight theme:", error);
+    Spicetify.showNotification("Could not load StarryNight theme.");
+  }
+};
+
+const App: React.FC = () => {
+  const [isStudyTime, setIsStudyTime] = useState(false);
+
+  const toggleStudyTime = (): void => {
+    setIsStudyTime((previousValue) => !previousValue);
   };
 
-
-  renderPage = () => {
-    const { isStudyTime } = this.state;
-
-    if (isStudyTime) {
-      return <StudyTimePage onEndStudy={() => {
-        this.toggleStudyTime();
-      }} onChangeTheme={() => { this.toggleLateNightTheme(); }} />;
-    }
-
-    return <ReadyToStudyPage onStartStudy={() => {
-      this.toggleStudyTime();
-    }} />;
+  if (isStudyTime) {
+    return (
+      <StudyTimePage
+        onEndStudy={toggleStudyTime}
+        onChangeTheme={() => {
+          void toggleLateNightTheme();
+        }}
+      />
+    );
   }
 
-  render() {
-
-
-
-    return <>
-      {
-        this.renderPage()
-      }
-    </>
-  }
-}
+  return <ReadyToStudyPage onStartStudy={toggleStudyTime} />;
+};
 
 export default App;
