@@ -1,33 +1,43 @@
-import React from 'react';
-import styles from './css/app.module.scss';
+import React from "react";
+import styles from "./css/app.module.scss";
 
 interface Props {
-    onStartStudy: () => void;
+  onStartStudy: () => void;
 }
 
 const ReadyToStudyPage: React.FC<Props> = ({ onStartStudy }) => {
-    return (
-        <>
-            <div className={styles.hero}>
-                <button className={`${styles.button} ${styles.border_red}`} onClick={onStartStudy}>
-                    <span className={`${styles.circle} ${styles.red}`} />{"Study Off"}
-                </button>
-                <div className={styles.loadingTitle}>{"Are You Ready to Study?"}</div>
-            </div>
-            <div className={styles.loadingContainer}>
+  return (
+    <section className={styles.readyGrid}>
+      <div className={styles.glassPanel}>
+        <div className={styles.appMark} aria-hidden="true">
+          SB
+        </div>
 
-                <div className={styles.book}>
-                    <span className={styles.bookcover}></span>
-                    <span className={`${styles.flip} ${styles.bookpage}`}></span>
-                    <span className={`${styles.flip} ${styles.bookpage}`}></span>
-                    <span className={styles.bookpage}></span>
-                    <span className={`${styles.bookcover} ${styles.flip}`}></span>
-                </div>
+        <p className={styles.eyebrow}>Study Banger</p>
+        <h1 className={styles.readyTitle}>Ready to focus?</h1>
+        <p className={styles.readyText}>
+          Start a clean study session. Timer presets, custom durations, playlists and the minimal
+          focus view are available after starting.
+        </p>
 
-                <div className={styles.motivation}>{"Time to Hit the Books!"}</div>
-            </div>
-        </>
-    );
+        <button className={styles.primaryButton} onClick={onStartStudy}>
+          Start study session
+        </button>
+      </div>
+
+      <div className={`${styles.glassPanel} ${styles.focusPreview}`}>
+        <div className={styles.orbit}>
+          <div className={styles.orbitCore}>25</div>
+        </div>
+
+        <h2>Dashboard + Focus view</h2>
+        <p>
+          Use the dashboard for setup. Switch to Focus view when you only want the timer, current
+          track and optional clock/date.
+        </p>
+      </div>
+    </section>
+  );
 };
 
 export default ReadyToStudyPage;
