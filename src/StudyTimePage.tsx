@@ -27,6 +27,7 @@ interface FocusDisplaySettings {
   showClock: boolean;
   showDate: boolean;
   showControls: boolean;
+  showMusicControls: boolean;
 }
 
 interface Playlist {
@@ -55,6 +56,7 @@ interface PlaybackSnapshot {
   contextUri?: string;
   trackUri?: string;
   wasPaused: boolean;
+  shouldRestore: boolean;
 }
 
 interface DomPlaylistDetails {
@@ -65,6 +67,24 @@ interface DomPlaylistDetails {
 interface PlayerEventTarget {
   addEventListener?: (event: string, callback: () => void) => void;
   removeEventListener?: (event: string, callback: () => void) => void;
+}
+
+interface SpicetifyReactDomLike {
+  render?: (element: React.ReactElement, container: Element) => void;
+  unmountComponentAtNode?: (container: Element) => void;
+}
+
+interface FocusPlayerControls {
+  togglePlay?: () => void | Promise<void>;
+  pause?: () => void | Promise<void>;
+  resume?: () => void | Promise<void>;
+  next?: () => void | Promise<void>;
+  back?: () => void | Promise<void>;
+  setVolume?: (volume: number) => void | Promise<void>;
+  getVolume?: () => number;
+  data?: {
+    isPaused?: boolean;
+  };
 }
 
 interface PlaylistApiLike {
@@ -126,11 +146,12 @@ const DEFAULT_SETTINGS: TimerSettings = {
 };
 
 const DEFAULT_DISPLAY_SETTINGS: FocusDisplaySettings = {
-  showMode: true,
+  showMode: false,
   showSong: true,
   showClock: false,
   showDate: false,
   showControls: true,
+  showMusicControls: true,
 };
 
 const DEFAULT_PLAYLISTS: Playlist[] = [
@@ -643,20 +664,27 @@ const capturePlaybackSnapshot = (): PlaybackSnapshot | null => {
   try {
     const data = Spicetify.Player.data as
       | {
-          context?: {
-            uri?: string;
-          };
-          item?: {
-            uri?: string;
-          };
-          isPaused?: boolean;
-        }
+        context?: {
+          uri?: string;
+        };
+        context_uri?: string;
+        item?: {
+          uri?: string;
+        };
+        isPaused?: boolean;
+      }
       | undefined;
 
+    const contextUri = data?.context?.uri || data?.context_uri || undefined;
+    const trackUri = data?.item?.uri || undefined;
+    const wasPaused = data?.isPaused ?? true;
+    const shouldRestore = Boolean((contextUri || trackUri) && !wasPaused);
+
     return {
-      contextUri: data?.context?.uri || undefined,
-      trackUri: data?.item?.uri || undefined,
-      wasPaused: data?.isPaused ?? true,
+      contextUri,
+      trackUri,
+      wasPaused,
+      shouldRestore,
     };
   } catch {
     return null;
@@ -667,11 +695,11 @@ const readCurrentTrack = (): CurrentTrack | null => {
   try {
     const item = Spicetify.Player.data?.item as
       | {
+        name?: string;
+        artists?: Array<{
           name?: string;
-          artists?: Array<{
-            name?: string;
-          }>;
-        }
+        }>;
+      }
       | undefined;
 
     if (!item?.name) {
@@ -692,6 +720,101 @@ const readCurrentTrack = (): CurrentTrack | null => {
   }
 };
 
+const getFocusPlayerControls = (): FocusPlayerControls => {
+  return Spicetify.Player as unknown as FocusPlayerControls;
+};
+
+const togglePlayerPlayback = (): void => {
+  const player = getFocusPlayerControls();
+
+  if (player.togglePlay) {
+    void player.togglePlay();
+    return;
+  }
+
+  if (player.data?.isPaused && player.resume) {
+    void player.resume();
+    return;
+  }
+
+  if (!player.data?.isPaused && player.pause) {
+    void player.pause();
+  }
+};
+
+const skipToPreviousTrack = (): void => {
+  const player = getFocusPlayerControls();
+
+  if (player.back) {
+    void player.back();
+  }
+};
+
+const skipToNextTrack = (): void => {
+  const player = getFocusPlayerControls();
+
+  if (player.next) {
+    void player.next();
+  }
+};
+
+const readPlayerVolume = (): number => {
+  const player = getFocusPlayerControls();
+
+  try {
+    const rawVolume = player.getVolume?.();
+
+    if (typeof rawVolume === "number" && Number.isFinite(rawVolume)) {
+      return Math.round(Math.max(0, Math.min(rawVolume, 1)) * 100);
+    }
+  } catch {
+    return 100;
+  }
+
+  return 100;
+};
+
+const setPlayerVolume = (volumePercent: number): void => {
+  const player = getFocusPlayerControls();
+  const normalizedVolume = Math.max(0, Math.min(volumePercent, 100)) / 100;
+
+  if (player.setVolume) {
+    void player.setVolume(normalizedVolume);
+  }
+};
+
+
+const PreviousIcon = (): JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M6 4.75A.75.75 0 0 0 4.5 4v16A.75.75 0 0 0 6 20.75v-7.39l11.1 6.41A.9.9 0 0 0 18.45 19V5a.9.9 0 0 0-1.35-.77L6 10.64V4.75Z" />
+  </svg>
+);
+
+const PlayIcon = (): JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="m7.05 3.606 13.49 7.788a.7.7 0 0 1 0 1.212L7.05 20.394A.7.7 0 0 1 6 19.788V4.212a.7.7 0 0 1 1.05-.606Z" />
+  </svg>
+);
+
+const PauseIcon = (): JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5.7 3a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7H5.7Zm10 0a.7.7 0 0 0-.7.7v16.6a.7.7 0 0 0 .7.7h2.6a.7.7 0 0 0 .7-.7V3.7a.7.7 0 0 0-.7-.7h-2.6Z" />
+  </svg>
+);
+
+const NextIcon = (): JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M18 4.75A.75.75 0 0 1 19.5 4v16a.75.75 0 0 1-1.5 0v-7.39L6.9 19.77A.9.9 0 0 1 5.55 19V5a.9.9 0 0 1 1.35-.77L18 10.64V4.75Z" />
+  </svg>
+);
+
+const VolumeIcon = (): JSX.Element => (
+  <svg viewBox="0 0 16 16" aria-hidden="true">
+    <path d="M10.016 1.125A.75.75 0 0 0 8.99.85l-6.925 4a3.64 3.64 0 0 0 0 6.299l6.925 4a.75.75 0 0 0 1.125-.65v-13a.75.75 0 0 0-.1-.375ZM11.5 5.56a2.75 2.75 0 0 1 0 4.88V5.56ZM16 8a5.75 5.75 0 0 1-4.5 5.614v-1.55a4.252 4.252 0 0 0 0-8.127v-1.55A5.75 5.75 0 0 1 16 8Z" />
+  </svg>
+);
+
+
 const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   const initialSettings = readTimerSettings();
 
@@ -711,7 +834,9 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   const [playlistLink, setPlaylistLink] = useState("");
   const [selectedPlaylistUri, setSelectedPlaylistUri] = useState<string | null>(null);
   const [currentTrack, setCurrentTrack] = useState<CurrentTrack | null>(() => readCurrentTrack());
+  const [playerIsPaused, setPlayerIsPaused] = useState(() => Boolean(getFocusPlayerControls().data?.isPaused ?? true));
   const [now, setNow] = useState(() => new Date());
+  const [volumePercent, setVolumePercent] = useState(() => readPlayerVolume());
   const [artworkByUri, setArtworkByUri] = useState<Record<string, PlaylistArtwork>>(() =>
     readFreshArtworkCache(),
   );
@@ -719,6 +844,7 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   const [failedCoverUris, setFailedCoverUris] = useState<Record<string, boolean>>({});
 
   const initialPlaybackRef = useRef<PlaybackSnapshot | null>(null);
+  const focusOverlayRootRef = useRef<HTMLDivElement | null>(null);
   const artworkFetchQueueRef = useRef(new Set<string>());
 
   const allPlaylists = useMemo(() => [...DEFAULT_PLAYLISTS, ...customPlaylists], [customPlaylists]);
@@ -755,11 +881,11 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
       const mergedArtwork = internalArtwork || domDetails.coverUrl || domDetails.title
         ? updateArtworkCache(playlistUri, {
-            title: internalArtwork?.title || domDetails.title,
-            description: internalArtwork?.description,
-            owner: internalArtwork?.owner,
-            imageUrl: internalArtwork?.imageUrl || domDetails.coverUrl,
-          })
+          title: internalArtwork?.title || domDetails.title,
+          description: internalArtwork?.description,
+          owner: internalArtwork?.owner,
+          imageUrl: internalArtwork?.imageUrl || domDetails.coverUrl,
+        })
         : null;
 
       if (mergedArtwork) {
@@ -851,7 +977,11 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
   useEffect(() => {
     const playerEvents = Spicetify.Player as unknown as PlayerEventTarget;
-    const updateTrack = (): void => setCurrentTrack(readCurrentTrack());
+    const updateTrack = (): void => {
+      setCurrentTrack(readCurrentTrack());
+      setPlayerIsPaused(Boolean(getFocusPlayerControls().data?.isPaused ?? true));
+      setVolumePercent(readPlayerVolume());
+    };
 
     updateTrack();
 
@@ -884,6 +1014,21 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
     window.addEventListener("keydown", handleKeydown);
 
     return () => window.removeEventListener("keydown", handleKeydown);
+  }, [viewMode]);
+
+  useEffect(() => {
+    const focusBodyClass = "study-banger-focus-active";
+
+    if (viewMode !== "focus") {
+      document.body.classList.remove(focusBodyClass);
+      return undefined;
+    }
+
+    document.body.classList.add(focusBodyClass);
+
+    return () => {
+      document.body.classList.remove(focusBodyClass);
+    };
   }, [viewMode]);
 
   useEffect(() => {
@@ -1006,17 +1151,13 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
     const snapshot = initialPlaybackRef.current;
     const uriToRestore = snapshot?.contextUri || snapshot?.trackUri;
 
-    if (!uriToRestore) {
+    if (!snapshot?.shouldRestore || !uriToRestore) {
+      Spicetify.showNotification("No active previous playback to restore.");
       return;
     }
 
     try {
       await Spicetify.Player.playUri(uriToRestore);
-
-      if (snapshot?.wasPaused) {
-        window.setTimeout(() => Spicetify.Player.pause(), 250);
-      }
-
       Spicetify.showNotification("Previous playback restored.");
     } catch (error) {
       console.error("Could not restore previous playback:", error);
@@ -1025,6 +1166,11 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   };
 
   const endStudySession = (): void => {
+    setIsPaused(true);
+    onEndStudy();
+  };
+
+  const endStudySessionAndRestore = (): void => {
     setIsPaused(true);
 
     void restorePreviousPlayback().finally(() => {
@@ -1084,6 +1230,9 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             Focus view
           </button>
           <button className={styles.secondaryButton} onClick={endStudySession}>
+            End session
+          </button>
+          <button className={styles.secondaryButton} onClick={endStudySessionAndRestore}>
             End & restore
           </button>
         </div>
@@ -1135,9 +1284,8 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             {TIMER_PRESETS.map((preset) => (
               <label
                 key={preset.id}
-                className={`${styles.durationOption} ${
-                  activeDurationId === preset.id ? styles.durationOptionActive : ""
-                }`}
+                className={`${styles.durationOption} ${activeDurationId === preset.id ? styles.durationOptionActive : ""
+                  }`}
               >
                 <input
                   type="radio"
@@ -1154,9 +1302,8 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             ))}
 
             <label
-              className={`${styles.durationOption} ${
-                activeDurationId === "custom" ? styles.durationOptionActive : ""
-              }`}
+              className={`${styles.durationOption} ${activeDurationId === "custom" ? styles.durationOptionActive : ""
+                }`}
             >
               <input
                 type="radio"
@@ -1212,15 +1359,6 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             <label>
               <input
                 type="checkbox"
-                checked={displaySettings.showMode}
-                onChange={() => toggleDisplaySetting("showMode")}
-              />
-              Show mode label
-            </label>
-
-            <label>
-              <input
-                type="checkbox"
                 checked={displaySettings.showSong}
                 onChange={() => toggleDisplaySetting("showSong")}
               />
@@ -1251,7 +1389,16 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
                 checked={displaySettings.showControls}
                 onChange={() => toggleDisplaySetting("showControls")}
               />
-              Show controls
+              Show timer controls
+            </label>
+
+            <label>
+              <input
+                type="checkbox"
+                checked={displaySettings.showMusicControls}
+                onChange={() => toggleDisplaySetting("showMusicControls")}
+              />
+              Show music controls
             </label>
           </div>
         </section>
@@ -1361,40 +1508,72 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
     </section>
   );
 
-  const controlsHiddenClass = displaySettings.showControls ? "" : styles.fullFocusControlsHidden;
-
   const focusView = (
-    <section className={`${styles.fullFocusView} ${controlsHiddenClass}`}>
+    <section className={styles.fullFocusView}>
       <div className={styles.fullFocusTopbar}>
-        <button className={styles.secondaryButton} onClick={() => setViewMode("dashboard")}>
+        <button className={styles.focusDashboardLink} onClick={() => setViewMode("dashboard")}>
           Dashboard
-        </button>
-        <button className={styles.secondaryButton} onClick={endStudySession}>
-          End & restore
         </button>
       </div>
 
       <div className={styles.fullFocusCenter}>
-        {displaySettings.showMode && (
-          <p className={styles.eyebrow}>{mode === "work" ? "Focus" : "Break"}</p>
-        )}
 
         <div className={styles.fullFocusTime}>{formatTimerTime(secondsLeft)}</div>
 
-        <div className={styles.fullFocusControls}>
-          <button
-            className={styles.primaryButton}
-            onClick={() => setIsPaused((previousValue) => !previousValue)}
-          >
-            {isPaused ? "Start" : "Pause"}
-          </button>
-          <button className={styles.secondaryButton} onClick={resetTimer}>
-            Reset
-          </button>
-          <button className={styles.secondaryButton} onClick={switchMode}>
-            {mode === "work" ? "Break" : "Focus"}
-          </button>
-        </div>
+        {displaySettings.showControls && (
+          <div className={styles.fullFocusControls}>
+            <button
+              className={styles.primaryButton}
+              onClick={() => setIsPaused((previousValue) => !previousValue)}
+            >
+              {isPaused ? "Start" : "Pause"}
+            </button>
+            <button className={styles.secondaryButton} onClick={resetTimer}>
+              Reset
+            </button>
+            <button className={styles.secondaryButton} onClick={switchMode}>
+              {mode === "work" ? "Break" : "Focus"}
+            </button>
+          </div>
+        )}
+
+        {displaySettings.showMusicControls && (
+          <div className={styles.fullFocusPlayerControls} aria-label="Spotify playback controls">
+            <button className={styles.focusIconButton} onClick={skipToPreviousTrack} aria-label="Previous track">
+              <PreviousIcon />
+            </button>
+            <button
+              className={`${styles.focusIconButton} ${styles.focusPlayButton}`}
+              onClick={() => {
+                togglePlayerPlayback();
+                window.setTimeout(() => {
+                  setPlayerIsPaused(Boolean(getFocusPlayerControls().data?.isPaused ?? true));
+                  setCurrentTrack(readCurrentTrack());
+                }, 120);
+              }}
+              aria-label={playerIsPaused ? "Play" : "Pause"}
+            >
+              {playerIsPaused ? <PlayIcon /> : <PauseIcon />}
+            </button>
+            <button className={styles.focusIconButton} onClick={skipToNextTrack} aria-label="Next track">
+              <NextIcon />
+            </button>
+            <label className={styles.focusVolumeControl} aria-label="Volume">
+              <VolumeIcon />
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={volumePercent}
+                onChange={(event) => {
+                  const nextVolume = Number(event.currentTarget.value);
+                  setVolumePercent(nextVolume);
+                  setPlayerVolume(nextVolume);
+                }}
+              />
+            </label>
+          </div>
+        )}
 
         {displaySettings.showSong && (
           <p className={styles.fullFocusSong}>
@@ -1427,7 +1606,46 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
     </section>
   );
 
-  return viewMode === "dashboard" ? dashboard : focusView;
+  useEffect(() => {
+    const reactDom = (Spicetify as unknown as { ReactDOM?: SpicetifyReactDomLike }).ReactDOM;
+
+    if (viewMode !== "focus") {
+      if (focusOverlayRootRef.current) {
+        reactDom?.unmountComponentAtNode?.(focusOverlayRootRef.current);
+        focusOverlayRootRef.current.remove();
+        focusOverlayRootRef.current = null;
+      }
+
+      return;
+    }
+
+    if (!reactDom?.render) {
+      return;
+    }
+
+    if (!focusOverlayRootRef.current) {
+      const root = document.createElement("div");
+      root.id = "study-banger-focus-root";
+      document.body.appendChild(root);
+      focusOverlayRootRef.current = root;
+    }
+
+    reactDom.render(focusView, focusOverlayRootRef.current);
+  });
+
+  useEffect(() => {
+    return () => {
+      const reactDom = (Spicetify as unknown as { ReactDOM?: SpicetifyReactDomLike }).ReactDOM;
+
+      if (focusOverlayRootRef.current) {
+        reactDom?.unmountComponentAtNode?.(focusOverlayRootRef.current);
+        focusOverlayRootRef.current.remove();
+        focusOverlayRootRef.current = null;
+      }
+    };
+  }, []);
+
+  return viewMode === "dashboard" ? dashboard : null;
 };
 
 export default StudyTimePage;
