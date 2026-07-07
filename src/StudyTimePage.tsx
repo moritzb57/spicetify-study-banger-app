@@ -38,20 +38,12 @@ interface Playlist {
   coverUrl?: string;
 }
 
-interface PlaylistMetadata {
+interface PlaylistArtwork {
   title?: string;
   description?: string;
-  coverUrl?: string;
   owner?: string;
-}
-
-interface PlaylistApiResponse {
-  name?: string;
-  description?: string;
-  images?: Array<{ url?: string }>;
-  owner?: {
-    display_name?: string;
-  };
+  imageUrl?: string;
+  expiresAt: number;
 }
 
 interface CurrentTrack {
@@ -65,11 +57,37 @@ interface PlaybackSnapshot {
   wasPaused: boolean;
 }
 
+interface DomPlaylistDetails {
+  title?: string;
+  coverUrl?: string;
+}
+
+interface PlayerEventTarget {
+  addEventListener?: (event: string, callback: () => void) => void;
+  removeEventListener?: (event: string, callback: () => void) => void;
+}
+
+interface PlaylistApiLike {
+  getMetadata?: (uri: string) => Promise<unknown>;
+}
+
+interface CosmosAsyncLike {
+  get?: <T = unknown>(url: string) => Promise<T>;
+}
+
+interface SpicetifyExtended {
+  Platform?: {
+    PlaylistAPI?: PlaylistApiLike;
+  };
+  CosmosAsync?: CosmosAsyncLike;
+}
+
 const SETTINGS_STORAGE_KEY = "study-banger:timer-settings";
 const ACTIVE_DURATION_STORAGE_KEY = "study-banger:active-duration-id";
 const DISPLAY_STORAGE_KEY = "study-banger:focus-display-settings";
 const CUSTOM_PLAYLISTS_STORAGE_KEY = "study-banger:custom-playlists";
-const PLAYLIST_METADATA_CACHE_KEY = "study-banger:playlist-metadata-cache";
+const PLAYLIST_ARTWORK_CACHE_KEY = "study-banger:playlist-artwork-cache";
+const PLAYLIST_ARTWORK_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const TIMER_PRESETS: TimerPreset[] = [
   {
@@ -122,6 +140,7 @@ const DEFAULT_PLAYLISTS: Playlist[] = [
     description: "Original Study Banger playlist.",
     uri: "spotify:playlist:5cwPclg5ZtafoBPWgZMHMb",
     tag: "Original",
+    coverUrl: "https://i2o.scdn.co/image/ab67706c0000cfa33dcdcb8727cd0038e662f4c4",
   },
   {
     id: "classical-bangers",
@@ -129,6 +148,7 @@ const DEFAULT_PLAYLISTS: Playlist[] = [
     description: "Original Study Banger playlist.",
     uri: "spotify:playlist:27Zm1P410dPfedsdoO9fqm",
     tag: "Original",
+    coverUrl: "https://i2o.scdn.co/image/ab67706c0000cfa3434a1c3fd09a2e8a26f57397",
   },
   {
     id: "lofi-study-2024",
@@ -136,6 +156,7 @@ const DEFAULT_PLAYLISTS: Playlist[] = [
     description: "Original Study Banger playlist.",
     uri: "spotify:playlist:6zCID88oNjNv9zx6puDHKj",
     tag: "Original",
+    coverUrl: "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000da84e8fcb214bcd7d054018d9fe4",
   },
   {
     id: "deep-focus",
@@ -184,30 +205,16 @@ const DEFAULT_PLAYLISTS: Playlist[] = [
 const sleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null;
+};
+
 const clampMinutes = (value: number, fallback: number): number => {
   if (!Number.isFinite(value)) {
     return fallback;
   }
 
   return Math.min(Math.max(Math.round(value), 1), 180);
-};
-
-const readMetadataCache = (): Record<string, PlaylistMetadata> => {
-  try {
-    const rawCache = window.localStorage.getItem(PLAYLIST_METADATA_CACHE_KEY);
-
-    if (!rawCache) {
-      return {};
-    }
-
-    return JSON.parse(rawCache) as Record<string, PlaylistMetadata>;
-  } catch {
-    return {};
-  }
-};
-
-const writeMetadataCache = (cache: Record<string, PlaylistMetadata>): void => {
-  window.localStorage.setItem(PLAYLIST_METADATA_CACHE_KEY, JSON.stringify(cache));
 };
 
 const getInitialDurationId = (settings: TimerSettings): string => {
@@ -220,7 +227,8 @@ const getInitialDurationId = (settings: TimerSettings): string => {
   return (
     TIMER_PRESETS.find(
       (preset) =>
-        preset.workMinutes === settings.workMinutes && preset.breakMinutes === settings.breakMinutes,
+        preset.workMinutes === settings.workMinutes &&
+        preset.breakMinutes === settings.breakMinutes,
     )?.id ?? "custom"
   );
 };
@@ -285,6 +293,57 @@ const readCustomPlaylists = (): Playlist[] => {
   }
 };
 
+const readArtworkCache = (): Record<string, PlaylistArtwork> => {
+  try {
+    const rawCache = window.localStorage.getItem(PLAYLIST_ARTWORK_CACHE_KEY);
+
+    if (!rawCache) {
+      return {};
+    }
+
+    return JSON.parse(rawCache) as Record<string, PlaylistArtwork>;
+  } catch {
+    return {};
+  }
+};
+
+const writeArtworkCache = (cache: Record<string, PlaylistArtwork>): void => {
+  window.localStorage.setItem(PLAYLIST_ARTWORK_CACHE_KEY, JSON.stringify(cache));
+};
+
+const readFreshArtworkCache = (): Record<string, PlaylistArtwork> => {
+  const now = Date.now();
+  const cache = readArtworkCache();
+  const freshCache: Record<string, PlaylistArtwork> = {};
+
+  Object.entries(cache).forEach(([uri, artwork]) => {
+    if (artwork.expiresAt > now) {
+      freshCache[uri] = artwork;
+    }
+  });
+
+  return freshCache;
+};
+
+const updateArtworkCache = (uri: string, artwork: Omit<PlaylistArtwork, "expiresAt">): PlaylistArtwork => {
+  const cache = readArtworkCache();
+  const nextArtwork: PlaylistArtwork = {
+    ...artwork,
+    expiresAt: Date.now() + PLAYLIST_ARTWORK_CACHE_TTL_MS,
+  };
+
+  cache[uri] = nextArtwork;
+  writeArtworkCache(cache);
+
+  return nextArtwork;
+};
+
+const invalidateArtworkCache = (uri: string): void => {
+  const cache = readArtworkCache();
+  delete cache[uri];
+  writeArtworkCache(cache);
+};
+
 const parsePlaylistUri = (input: string): string | null => {
   const trimmedInput = input.trim();
 
@@ -306,6 +365,20 @@ const getPlaylistId = (uri: string): string | null => {
   return uriMatch?.[1] ?? null;
 };
 
+const escapeCssValue = (value: string): string => {
+  const cssApi = (window as unknown as { CSS?: { escape?: (input: string) => string } }).CSS;
+
+  if (cssApi?.escape) {
+    return cssApi.escape(value);
+  }
+
+  return value.replace(/["\\]/g, "\\$&");
+};
+
+const normalizeText = (value: string | null | undefined): string => {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+};
+
 const getDurationForMode = (mode: TimerMode, settings: TimerSettings): number => {
   return (mode === "work" ? settings.workMinutes : settings.breakMinutes) * 60;
 };
@@ -325,6 +398,234 @@ const formatClockTime = (date: Date): string => {
   });
 };
 
+const isSpotifyImageUrl = (url: string): boolean => {
+  return /i\.scdn\.co|i2o\.scdn\.co|image-cdn.*spotify|misc\.scdn\.co|mosaic\.scdn/.test(url);
+};
+
+const toSpotifyImageUrl = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  if (isSpotifyImageUrl(value)) {
+    return value;
+  }
+
+  const spotifyImageMatch = value.match(/^spotify:image:([A-Za-z0-9]+)$/);
+  if (spotifyImageMatch) {
+    return `https://i.scdn.co/image/${spotifyImageMatch[1]}`;
+  }
+
+  return null;
+};
+
+const extractFirstSpotifyImageUrl = (value: unknown, depth = 0): string | null => {
+  if (depth > 5) {
+    return null;
+  }
+
+  const directUrl = toSpotifyImageUrl(value);
+  if (directUrl) {
+    return directUrl;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const imageUrl = extractFirstSpotifyImageUrl(item, depth + 1);
+      if (imageUrl) {
+        return imageUrl;
+      }
+    }
+
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const preferredKeys = [
+    "url",
+    "uri",
+    "imageUrl",
+    "image_url",
+    "coverUrl",
+    "cover",
+    "images",
+    "image",
+    "picture",
+    "coverArt",
+    "sources",
+  ];
+
+  for (const key of preferredKeys) {
+    if (key in value) {
+      const imageUrl = extractFirstSpotifyImageUrl(value[key], depth + 1);
+      if (imageUrl) {
+        return imageUrl;
+      }
+    }
+  }
+
+  for (const childValue of Object.values(value)) {
+    const imageUrl = extractFirstSpotifyImageUrl(childValue, depth + 1);
+    if (imageUrl) {
+      return imageUrl;
+    }
+  }
+
+  return null;
+};
+
+const getNestedString = (value: unknown, paths: string[][]): string | undefined => {
+  for (const path of paths) {
+    let currentValue: unknown = value;
+
+    for (const key of path) {
+      if (!isRecord(currentValue)) {
+        currentValue = undefined;
+        break;
+      }
+
+      currentValue = currentValue[key];
+    }
+
+    if (typeof currentValue === "string" && currentValue.trim()) {
+      return currentValue.trim();
+    }
+  }
+
+  return undefined;
+};
+
+const getSpicetifyExtended = (): SpicetifyExtended => {
+  return Spicetify as unknown as SpicetifyExtended;
+};
+
+const fetchPlaylistArtworkFromInternalApis = async (
+  playlistUri: string,
+): Promise<Omit<PlaylistArtwork, "expiresAt"> | null> => {
+  const spicetifyExtended = getSpicetifyExtended();
+  const playlistApi = spicetifyExtended.Platform?.PlaylistAPI;
+  const cosmosAsync = spicetifyExtended.CosmosAsync;
+
+  try {
+    if (playlistApi?.getMetadata) {
+      const metadata = await playlistApi.getMetadata(playlistUri);
+      const title = getNestedString(metadata, [["name"], ["title"]]);
+      const description = getNestedString(metadata, [["description"]]);
+      const owner = getNestedString(metadata, [
+        ["owner", "name"],
+        ["owner", "display_name"],
+        ["ownerName"],
+      ]);
+      const imageUrl = extractFirstSpotifyImageUrl(metadata);
+
+      if (title || imageUrl) {
+        return {
+          title,
+          description,
+          owner,
+          imageUrl: imageUrl ?? undefined,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[Study Banger] PlaylistAPI metadata lookup failed:", error);
+  }
+
+  try {
+    if (cosmosAsync?.get) {
+      const response = await cosmosAsync.get<unknown>(`sp://core-playlist/v1/playlist/${playlistUri}`);
+      const playlist = isRecord(response) && isRecord(response.playlist) ? response.playlist : response;
+      const title = getNestedString(playlist, [["name"], ["title"]]);
+      const description = getNestedString(playlist, [["description"]]);
+      const owner = getNestedString(playlist, [
+        ["owner", "name"],
+        ["owner", "display_name"],
+        ["ownerName"],
+      ]);
+      const imageUrl = extractFirstSpotifyImageUrl(playlist);
+
+      if (title || imageUrl) {
+        return {
+          title,
+          description,
+          owner,
+          imageUrl: imageUrl ?? undefined,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[Study Banger] Core playlist metadata lookup failed:", error);
+  }
+
+  return null;
+};
+
+const isVisibleElement = (element: Element): boolean => {
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+
+  return (
+    rect.width > 8 &&
+    rect.height > 8 &&
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    rect.bottom >= 0 &&
+    rect.right >= 0 &&
+    rect.top <= window.innerHeight &&
+    rect.left <= window.innerWidth
+  );
+};
+
+const getPlaylistAnchorsInSpotifyDom = (playlistUri: string): HTMLAnchorElement[] => {
+  const playlistId = getPlaylistId(playlistUri);
+
+  if (!playlistId) {
+    return [];
+  }
+
+  const escapedPlaylistId = escapeCssValue(playlistId);
+
+  const selector = [
+    `a[href*="/playlist/${escapedPlaylistId}"]`,
+    `a[href*="spotify:playlist:${escapedPlaylistId}"]`,
+    `a[href*="playlist/${escapedPlaylistId}"]`,
+  ].join(",");
+
+  return [...document.querySelectorAll<HTMLAnchorElement>(selector)].filter(isVisibleElement);
+};
+
+const findPlaylistDetailsInSpotifyDom = (playlistUri: string): DomPlaylistDetails => {
+  const anchors = getPlaylistAnchorsInSpotifyDom(playlistUri);
+
+  if (anchors.length === 0) {
+    return {};
+  }
+
+  const title =
+    anchors
+      .map((anchor) => normalizeText(anchor.getAttribute("aria-label")))
+      .find(Boolean) ||
+    anchors
+      .map((anchor) => normalizeText(anchor.getAttribute("title")))
+      .find(Boolean) ||
+    anchors.map((anchor) => normalizeText(anchor.textContent)).find(Boolean) ||
+    undefined;
+
+  const insideAnchorImages = anchors
+    .flatMap((anchor) => [...anchor.querySelectorAll<HTMLImageElement>("img[src]")])
+    .filter(isVisibleElement)
+    .map((image) => image.currentSrc || image.src)
+    .filter(isSpotifyImageUrl);
+
+  return {
+    title,
+    coverUrl: insideAnchorImages[0],
+  };
+};
+
 const getPlaylistInitials = (playlist: Playlist): string => {
   const words = playlist.title
     .split(/\s+/)
@@ -340,7 +641,17 @@ const getPlaylistInitials = (playlist: Playlist): string => {
 
 const capturePlaybackSnapshot = (): PlaybackSnapshot | null => {
   try {
-    const data = Spicetify.Player.data;
+    const data = Spicetify.Player.data as
+      | {
+          context?: {
+            uri?: string;
+          };
+          item?: {
+            uri?: string;
+          };
+          isPaused?: boolean;
+        }
+      | undefined;
 
     return {
       contextUri: data?.context?.uri || undefined,
@@ -354,60 +665,43 @@ const capturePlaybackSnapshot = (): PlaybackSnapshot | null => {
 
 const readCurrentTrack = (): CurrentTrack | null => {
   try {
-    const item = Spicetify.Player.data?.item;
+    const item = Spicetify.Player.data?.item as
+      | {
+          name?: string;
+          artists?: Array<{
+            name?: string;
+          }>;
+        }
+      | undefined;
 
     if (!item?.name) {
       return null;
     }
 
+    const artist = item.artists
+      ?.map((entry) => entry.name)
+      .filter((name): name is string => Boolean(name))
+      .join(", ");
+
     return {
       title: item.name,
-      artist: item.artists?.map((artist) => artist.name).join(", ") || "",
+      artist: artist || "",
     };
   } catch {
     return null;
   }
 };
 
-const fetchPlaylistMetadata = async (uri: string): Promise<PlaylistMetadata | null> => {
-  const playlistId = getPlaylistId(uri);
-
-  if (!playlistId) {
-    return null;
-  }
-
-  const cosmos = (Spicetify as unknown as {
-    CosmosAsync?: {
-      get: <T>(url: string) => Promise<T>;
-    };
-  }).CosmosAsync;
-
-  if (!cosmos?.get) {
-    return null;
-  }
-
-  try {
-    const response = await cosmos.get<PlaylistApiResponse>(
-      `https://api.spotify.com/v1/playlists/${playlistId}?fields=name,description,images,owner(display_name)`,
-    );
-
-    return {
-      title: response.name,
-      description: response.description,
-      coverUrl: response.images?.find((image) => image.url)?.url,
-      owner: response.owner?.display_name,
-    };
-  } catch (error) {
-    console.warn("Could not fetch playlist metadata:", error);
-    return null;
-  }
-};
-
 const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   const initialSettings = readTimerSettings();
+
   const [settings, setSettings] = useState<TimerSettings>(() => initialSettings);
-  const [activeDurationId, setActiveDurationId] = useState<string>(() => getInitialDurationId(initialSettings));
-  const [displaySettings, setDisplaySettings] = useState<FocusDisplaySettings>(() => readDisplaySettings());
+  const [activeDurationId, setActiveDurationId] = useState<string>(() =>
+    getInitialDurationId(initialSettings),
+  );
+  const [displaySettings, setDisplaySettings] = useState<FocusDisplaySettings>(() =>
+    readDisplaySettings(),
+  );
   const [mode, setMode] = useState<TimerMode>("work");
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [secondsLeft, setSecondsLeft] = useState(() => initialSettings.workMinutes * 60);
@@ -418,10 +712,122 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   const [selectedPlaylistUri, setSelectedPlaylistUri] = useState<string | null>(null);
   const [currentTrack, setCurrentTrack] = useState<CurrentTrack | null>(() => readCurrentTrack());
   const [now, setNow] = useState(() => new Date());
-  const [metadataByUri, setMetadataByUri] = useState<Record<string, PlaylistMetadata>>(() => readMetadataCache());
+  const [artworkByUri, setArtworkByUri] = useState<Record<string, PlaylistArtwork>>(() =>
+    readFreshArtworkCache(),
+  );
+  const [failedImageUrls, setFailedImageUrls] = useState<Record<string, boolean>>({});
   const [failedCoverUris, setFailedCoverUris] = useState<Record<string, boolean>>({});
-  const metadataFetchQueueRef = useRef(new Set<string>());
+
   const initialPlaybackRef = useRef<PlaybackSnapshot | null>(null);
+  const artworkFetchQueueRef = useRef(new Set<string>());
+
+  const allPlaylists = useMemo(() => [...DEFAULT_PLAYLISTS, ...customPlaylists], [customPlaylists]);
+
+  const playlistUriSignature = useMemo(
+    () => allPlaylists.map((playlist) => playlist.uri).join("|"),
+    [allPlaylists],
+  );
+
+  const refreshOnePlaylistArtwork = async (
+    playlistUri: string,
+    options: { force?: boolean } = {},
+  ): Promise<PlaylistArtwork | null> => {
+    const cachedArtwork = readFreshArtworkCache()[playlistUri];
+
+    if (!options.force && cachedArtwork) {
+      setArtworkByUri((previousArtwork) => ({
+        ...previousArtwork,
+        [playlistUri]: cachedArtwork,
+      }));
+
+      return cachedArtwork;
+    }
+
+    if (artworkFetchQueueRef.current.has(playlistUri)) {
+      return null;
+    }
+
+    artworkFetchQueueRef.current.add(playlistUri);
+
+    try {
+      const internalArtwork = await fetchPlaylistArtworkFromInternalApis(playlistUri);
+      const domDetails = findPlaylistDetailsInSpotifyDom(playlistUri);
+
+      const mergedArtwork = internalArtwork || domDetails.coverUrl || domDetails.title
+        ? updateArtworkCache(playlistUri, {
+            title: internalArtwork?.title || domDetails.title,
+            description: internalArtwork?.description,
+            owner: internalArtwork?.owner,
+            imageUrl: internalArtwork?.imageUrl || domDetails.coverUrl,
+          })
+        : null;
+
+      if (mergedArtwork) {
+        setArtworkByUri((previousArtwork) => ({
+          ...previousArtwork,
+          [playlistUri]: mergedArtwork,
+        }));
+
+        setFailedCoverUris((previousFailures) => {
+          const nextFailures = { ...previousFailures };
+          delete nextFailures[playlistUri];
+          return nextFailures;
+        });
+      }
+
+      return mergedArtwork;
+    } finally {
+      artworkFetchQueueRef.current.delete(playlistUri);
+    }
+  };
+
+  const refreshPlaylistArtwork = async (showNotification = true): Promise<void> => {
+    let foundCount = 0;
+
+    for (const playlist of allPlaylists) {
+      const artwork = await refreshOnePlaylistArtwork(playlist.uri, { force: true });
+
+      if (artwork?.imageUrl) {
+        foundCount += 1;
+      }
+
+      await sleep(600);
+    }
+
+    if (showNotification) {
+      Spicetify.showNotification(
+        foundCount > 0
+          ? `Updated ${foundCount} playlist cover${foundCount === 1 ? "" : "s"}.`
+          : "No playlist covers could be updated.",
+      );
+    }
+  };
+
+  const recoverCoverAfterImageError = async (playlist: Playlist, failedUrl: string): Promise<void> => {
+    setFailedImageUrls((previousFailures) => ({
+      ...previousFailures,
+      [failedUrl]: true,
+    }));
+
+    invalidateArtworkCache(playlist.uri);
+
+    const artwork = await refreshOnePlaylistArtwork(playlist.uri, { force: true });
+    const replacementUrl = artwork?.imageUrl;
+
+    if (replacementUrl && replacementUrl !== failedUrl) {
+      setFailedCoverUris((previousFailures) => {
+        const nextFailures = { ...previousFailures };
+        delete nextFailures[playlist.uri];
+        return nextFailures;
+      });
+      return;
+    }
+
+    setFailedCoverUris((previousFailures) => ({
+      ...previousFailures,
+      [playlist.uri]: true,
+    }));
+  };
 
   useEffect(() => {
     initialPlaybackRef.current = capturePlaybackSnapshot();
@@ -444,16 +850,17 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
   }, [customPlaylists]);
 
   useEffect(() => {
+    const playerEvents = Spicetify.Player as unknown as PlayerEventTarget;
     const updateTrack = (): void => setCurrentTrack(readCurrentTrack());
 
     updateTrack();
 
-    Spicetify.Player.addEventListener("songchange", updateTrack);
-    Spicetify.Player.addEventListener("onplaypause", updateTrack);
+    playerEvents.addEventListener?.("songchange", updateTrack);
+    playerEvents.addEventListener?.("onplaypause", updateTrack);
 
     return () => {
-      Spicetify.Player.removeEventListener("songchange", updateTrack);
-      Spicetify.Player.removeEventListener("onplaypause", updateTrack);
+      playerEvents.removeEventListener?.("songchange", updateTrack);
+      playerEvents.removeEventListener?.("onplaypause", updateTrack);
     };
   }, []);
 
@@ -478,6 +885,34 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
     return () => window.removeEventListener("keydown", handleKeydown);
   }, [viewMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateMissingArtwork = async (): Promise<void> => {
+      for (const playlist of allPlaylists) {
+        if (cancelled) {
+          return;
+        }
+
+        const hasDefaultCover = Boolean(playlist.coverUrl);
+        const hasFreshCachedCover = Boolean(readFreshArtworkCache()[playlist.uri]?.imageUrl);
+
+        if (hasDefaultCover || hasFreshCachedCover) {
+          continue;
+        }
+
+        await refreshOnePlaylistArtwork(playlist.uri);
+        await sleep(600);
+      }
+    };
+
+    void hydrateMissingArtwork();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [playlistUriSignature]);
 
   useEffect(() => {
     if (isPaused) {
@@ -506,59 +941,6 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
     return () => clearInterval(interval);
   }, [isPaused, mode, settings]);
-
-  const allPlaylists = useMemo(() => [...DEFAULT_PLAYLISTS, ...customPlaylists], [customPlaylists]);
-  const playlistUriSignature = useMemo(() => allPlaylists.map((playlist) => playlist.uri).join("|"), [allPlaylists]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadMissingMetadata = async (): Promise<void> => {
-      for (const playlist of allPlaylists) {
-        if (cancelled) {
-          return;
-        }
-
-        const cachedMetadata = readMetadataCache()[playlist.uri];
-        const alreadyHasCover = Boolean(playlist.coverUrl || cachedMetadata?.coverUrl);
-        const alreadyQueued = metadataFetchQueueRef.current.has(playlist.uri);
-
-        if (alreadyHasCover || alreadyQueued) {
-          continue;
-        }
-
-        metadataFetchQueueRef.current.add(playlist.uri);
-        const metadata = await fetchPlaylistMetadata(playlist.uri);
-
-        if (cancelled) {
-          return;
-        }
-
-        if (metadata) {
-          setMetadataByUri((previousMetadata) => {
-            const nextMetadata = {
-              ...previousMetadata,
-              [playlist.uri]: {
-                ...previousMetadata[playlist.uri],
-                ...metadata,
-              },
-            };
-
-            writeMetadataCache(nextMetadata);
-            return nextMetadata;
-          });
-        }
-
-        await sleep(900);
-      }
-    };
-
-    void loadMissingMetadata();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [playlistUriSignature, allPlaylists]);
 
   const totalSeconds = getDurationForMode(mode, settings);
   const progressPercent = Math.round(((totalSeconds - secondsLeft) / totalSeconds) * 100);
@@ -602,6 +984,7 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
   const switchMode = (): void => {
     const nextMode: TimerMode = mode === "work" ? "break" : "work";
+
     setMode(nextMode);
     setIsPaused(true);
     setSecondsLeft(getDurationForMode(nextMode, settings));
@@ -657,29 +1040,18 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
       return;
     }
 
-    const metadata = await fetchPlaylistMetadata(parsedUri);
-    const title = playlistName.trim() || metadata?.title || "Custom playlist";
+    const artwork = await refreshOnePlaylistArtwork(parsedUri, { force: true });
+    const domDetails = findPlaylistDetailsInSpotifyDom(parsedUri);
+    const title = playlistName.trim() || artwork?.title || domDetails.title || "Custom playlist";
 
     const playlist: Playlist = {
       id: `custom-${Date.now()}`,
       title,
-      description: metadata?.description || "Your custom Spotify playlist.",
+      description: artwork?.description || "Your custom Spotify playlist.",
       uri: parsedUri,
-      tag: metadata?.owner || "Custom",
-      coverUrl: metadata?.coverUrl,
+      tag: artwork?.owner || "Custom",
+      coverUrl: artwork?.imageUrl || domDetails.coverUrl || undefined,
     };
-
-    if (metadata) {
-      setMetadataByUri((previousMetadata) => {
-        const nextMetadata = {
-          ...previousMetadata,
-          [parsedUri]: metadata,
-        };
-
-        writeMetadataCache(nextMetadata);
-        return nextMetadata;
-      });
-    }
 
     setCustomPlaylists((previousPlaylists) => [...previousPlaylists, playlist]);
     setPlaylistName("");
@@ -732,7 +1104,10 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
           </div>
 
           <div className={styles.timerActions}>
-            <button className={styles.primaryButton} onClick={() => setIsPaused((previousValue) => !previousValue)}>
+            <button
+              className={styles.primaryButton}
+              onClick={() => setIsPaused((previousValue) => !previousValue)}
+            >
               {isPaused ? "Start" : "Pause"}
             </button>
             <button className={styles.secondaryButton} onClick={resetTimer}>
@@ -760,7 +1135,9 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             {TIMER_PRESETS.map((preset) => (
               <label
                 key={preset.id}
-                className={`${styles.durationOption} ${activeDurationId === preset.id ? styles.durationOptionActive : ""}`}
+                className={`${styles.durationOption} ${
+                  activeDurationId === preset.id ? styles.durationOptionActive : ""
+                }`}
               >
                 <input
                   type="radio"
@@ -776,7 +1153,11 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
               </label>
             ))}
 
-            <label className={`${styles.durationOption} ${activeDurationId === "custom" ? styles.durationOptionActive : ""}`}>
+            <label
+              className={`${styles.durationOption} ${
+                activeDurationId === "custom" ? styles.durationOptionActive : ""
+              }`}
+            >
               <input
                 type="radio"
                 name="timer-preset"
@@ -882,6 +1263,15 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
             <p className={styles.eyebrow}>Music</p>
             <h2>Playlists</h2>
           </div>
+
+          <button
+            className={styles.secondaryButton}
+            onClick={() => {
+              void refreshPlaylistArtwork(true);
+            }}
+          >
+            Refresh covers
+          </button>
         </div>
 
         <div className={styles.playlistForm}>
@@ -907,18 +1297,21 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
 
         <div className={styles.libraryGrid}>
           {allPlaylists.map((playlist, index) => {
-            const metadata = metadataByUri[playlist.uri];
+            const artwork = artworkByUri[playlist.uri];
             const resolvedPlaylist: Playlist = {
               ...playlist,
-              title: metadata?.title || playlist.title,
-              description: metadata?.description || playlist.description,
-              coverUrl: metadata?.coverUrl || playlist.coverUrl,
-              tag: metadata?.owner || playlist.tag,
+              title: artwork?.title || playlist.title,
+              description: artwork?.description || playlist.description,
+              tag: artwork?.owner || playlist.tag,
+              coverUrl: artwork?.imageUrl || playlist.coverUrl,
             };
 
             const isSelected = selectedPlaylistUri === playlist.uri;
             const isCustom = playlist.id.startsWith("custom-");
-            const hasUsableCover = Boolean(resolvedPlaylist.coverUrl && !failedCoverUris[playlist.uri]);
+            const imageUrl = resolvedPlaylist.coverUrl;
+            const hasUsableCover = Boolean(
+              imageUrl && !failedImageUrls[imageUrl] && !failedCoverUris[playlist.uri],
+            );
 
             return (
               <article
@@ -932,16 +1325,13 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
                   }}
                   aria-label={`Play ${resolvedPlaylist.title}`}
                 >
-                  {hasUsableCover ? (
+                  {hasUsableCover && imageUrl ? (
                     <img
-                      src={resolvedPlaylist.coverUrl}
+                      src={imageUrl}
                       alt=""
-                      onError={() =>
-                        setFailedCoverUris((previousFailures) => ({
-                          ...previousFailures,
-                          [playlist.uri]: true,
-                        }))
-                      }
+                      onError={() => {
+                        void recoverCoverAfterImageError(resolvedPlaylist, imageUrl);
+                      }}
                     />
                   ) : (
                     <span className={`${styles.generatedCover} ${styles[`coverTone${index % 6}`]}`}>
@@ -956,7 +1346,10 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
                 </div>
 
                 {isCustom && (
-                  <button className={styles.removeButton} onClick={() => removeCustomPlaylist(playlist.id)}>
+                  <button
+                    className={styles.removeButton}
+                    onClick={() => removeCustomPlaylist(playlist.id)}
+                  >
                     Remove
                   </button>
                 )}
@@ -989,7 +1382,10 @@ const StudyTimePage: React.FC<Props> = ({ onEndStudy }) => {
         <div className={styles.fullFocusTime}>{formatTimerTime(secondsLeft)}</div>
 
         <div className={styles.fullFocusControls}>
-          <button className={styles.primaryButton} onClick={() => setIsPaused((previousValue) => !previousValue)}>
+          <button
+            className={styles.primaryButton}
+            onClick={() => setIsPaused((previousValue) => !previousValue)}
+          >
             {isPaused ? "Start" : "Pause"}
           </button>
           <button className={styles.secondaryButton} onClick={resetTimer}>
